@@ -17,7 +17,6 @@ import (
 
 func main() {
 
-
 	appConfig := GetAppConfig()
 	log.Println("config loaded")
 	port := 8888
@@ -56,32 +55,37 @@ func HandleConn(client net.Conn,app *AppConfig) {
 	var endOfFirstLine bool
 	data := make([]byte, 0)
 
-	bufferChan := make(chan IncomingBuffer, 0)
-	endOfIncomingBufferStream := make(chan struct{})
+	bufferChan := make(chan IncomingBuffer)
+	endOfIncomingBufferStream := make(chan struct{},1)
 
 	clientHTTPInfo := &ClientRequestInfo{}
 	//<shared/>
 
 	//<upstream>
+	now = time.Now()
 	upstream, err := net.Dial("tcp", app.MirrorConfig.UpstreamAddr)
 	if err != nil {
 		log.Printf("Failed to connect to upstream: %s", err)
 		return
 	}
+	log.Printf("Connected to upstream. Time Taken: %dms",time.Now().Sub(now).Milliseconds())
+	
 	//<upstream/>
 	//
 	// //<mirror>
 	go func() {
-		now := time.Now()
 
-		defer func() {
-			log.Printf("Finished processing mirror request: %dms",time.Now().Sub(now).Milliseconds())
-		}()
 		mirror, err := net.Dial("tcp", app.MirrorConfig.MirrorAddr)
 		if err != nil {
 			log.Printf("Failed to connect to upstream: %s", err)
 			return
 		}
+		cur := time.Now()
+
+		defer func() {
+			log.Printf("Finished processing mirror request: %dms",time.Now().Sub(cur).Milliseconds())
+		}()
+		log.Println("Connected to mirror")
 
 		uriModified := false
 		// bufferedData := []byte{}
@@ -99,7 +103,7 @@ func HandleConn(client net.Conn,app *AppConfig) {
 						}
 						// swapping uri
 						finalURI := app.MirrorConfig.URIMapping[clientHTTPInfo.Uri]
-						log.Printf("Swapping URI for mirror prev:%s final: %s",clientHTTPInfo.Uri,finalURI)
+						// log.Printf("Swapping URI for mirror prev:%s final: %s",clientHTTPInfo.Uri,finalURI)
 
 						// adjust offset according to the uri length diff
 						if uriLengthDiff := len([]byte(finalURI)) - len([]byte(clientHTTPInfo.Uri)); uriLengthDiff < 0 {
@@ -120,61 +124,24 @@ func HandleConn(client net.Conn,app *AppConfig) {
 					}
 				}
 			}
-			log.Println(string(buffer.Buffer))
+			// log.Println(string(buffer.Buffer))
 			mirror.Write(buffer.Buffer[:buffer.Offset])
 		case <-endOfIncomingBufferStream:
 			log.Println("Finished reading client incoming buffer")
 			break
 		default:
 		}
-		mirrorResponseBuffer := make([]byte,0)
-		contentLength := 0
-		endOfHeaders := false
 		for {
 			buffer := make([]byte, 1024)
-			offset, err := client.Read(buffer)
+			_, err := mirror.Read(buffer)
 			if err != nil {
 				if err.Error() == "EOF" {
-					log.Println("Connection closed")
+					log.Println("Mirror Connection closed")
 					break
 				}
-				log.Printf("Error reading: %s", err)
+				log.Printf("Mirror Error reading: %s", err)
 				break
 			}
-			mirrorResponseBuffer = append(mirrorResponseBuffer,buffer[:offset]...)
-			headerEndIdx := bytes.Index(data, []byte("\r\n\r\n"))
-			if headerEndIdx != -1 {
-				endOfHeaders = true
-			}
-			// pushing index to actual end of header
-			headerEndIdx += 4
-
-			// if finished reading headers then search for contentLength value
-			if endOfHeaders && contentLength == 0 {
-				contentLengthHeader := "Content-Length: "
-				contentLengthHeaderKeyLength := len(contentLengthHeader)
-				// content length index
-				clIdx := bytes.Index(data[:headerEndIdx], []byte(contentLengthHeader))
-				if clIdx == -1 {
-					//write error message here for no content length header so invalid http request
-					log.Fatalln("invalid response, header 'Content-Length' not found")
-				}
-				begginningIdx := clIdx + contentLengthHeaderKeyLength
-				for idx, b := range data[begginningIdx:headerEndIdx] {
-					if b == '\r' {
-						// log.Printf("reached end of content length, value: %s", string(data[begginningIdx:begginningIdx+idx]))
-						length, err := strconv.Atoi(string(data[begginningIdx : begginningIdx+idx]))
-						if err != nil {
-							//write error message here for no content length header so invalid http request
-							log.Fatalln("invalid request, failed to parse content length value to int")
-						}
-						contentLength = length
-						// log.Println("finished recieving response from mirror")
-						break
-					}
-				}
-			}
-
 		}
 
 	}()
@@ -275,6 +242,7 @@ outer:
 
 		// checking if content length vaue matches the length after \r\n\r\n
 		if contentLength != 0 && len(data[headerEndIdx:]) == contentLength {
+			endOfIncomingBufferStream <- struct {}{}
 			for {
 				upstreamBuffer := make([]byte, 1024)
 				upstreamOffset, err := upstream.Read(upstreamBuffer)
@@ -305,11 +273,8 @@ outer:
 			break
 		}
 	}
-	log.Println("END OF HANDLE CONNNN")
 	return 
-	// the above loop breaks if all the data is written to upstream
-	// and now its time to start reading from upstream
-	log.Println(string(data))
+	// log.Println(string(data))
 	// clientJSONHttpInfo, _ := json.MarshalIndent(&clientHTTPInfo, " ", " ")
 	// log.Println(string(clientJSONHttpInfo))
 
@@ -355,35 +320,3 @@ type MirrorConfig struct {
 	MirrorAddr   string            `yaml:"mirror_addr"`
 	URIMapping   map[string]string `yaml:"uri_mapping"`
 }
-
-// func LoadEnv() {
-// 	args := os.Args
-// 	envLoaded := false
-// 	test := false
-// 	for _, arg := range args {
-// 		if strings.Contains(arg, "--env=") {
-// 			envFile := strings.Split(arg, "=")[1]
-// 			err := godotenv.Load(envFile)
-// 			if err != nil {
-// 				log.Fatalln(err)
-// 			}
-// 			envLoaded = true
-// 		}
-// 		if arg == "--test" {
-// 			test = true
-// 		}
-// 	}
-// 	if test {
-// 		cwd, err := os.Getwd()
-// 		if err != nil {
-// 			log.Fatal(err)
-// 		}
-// 		env := fmt.Sprintf("%s/.env",cwd)
-// 		godotenv.Load(env)
-// 	}
-// 	if !envLoaded && !test {
-// 		log.Fatalln("Specify env file: --env=<file_path>")
-// 	}
-// }
-
-

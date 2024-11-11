@@ -5,6 +5,11 @@ Minimal service to mirror HTTP requests.
 ### Why this?
 See, I had this new highly optimized backwards compatible api ready for production and I wanted to load test this thing, but it was a `POST` request and clients request payload were somewhat unique to one another, so wrote this to mirror request to another server on the new endpoint. As of now, this can be possibly seen as tailored to fit my very specific needs but hopefully we can fix that with further iteration.
 
+### Future Planning
+- Make it configurable through some yaml
+- Add e2e tests
+- Better logging
+
 ***
 > [!NOTE]
 > This service is built for maximum performance by minimizing HTTP parsing overhead. Instead, it directly modifies required values on the fly.

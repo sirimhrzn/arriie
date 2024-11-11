@@ -1,0 +1,6 @@
+mirror_config:
+  upstream_addr: "localhost:8080"
+  mirror_addr: "localhost:8080"
+  uri_mapping:
+    "/api/source": "/api/mirror"
+
